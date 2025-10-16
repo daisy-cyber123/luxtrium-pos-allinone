@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Luxtrium POS – All-in-One</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f4f4;
+      margin: 0;
+      padding: 2rem;
+      color: #333;
+    }
+    h1 { text-align: center; }
+    .container {
+      max-width: 500px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    }
+    .product {
+      display: flex;
+      justify-content: space-between;
+      margin: 8px 0;
+    }
+    button {
+      background: black;
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-top: 12px;
+    }
+    button:hover { opacity: 0.85; }
+    #total { font-size: 1.2em; font-weight: bold; margin-top: 10px; }
+    .actions { display: flex; gap: 10px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Luxtrium POS</h1>
+    <div id="products"></div>
+    <div id="total">Total: $0.00</div>
+    <div class="actions">
+      <button onclick="checkout()">Charge</button>
+      <button onclick="cancelPayment()" style="background:#777;">Cancel Payment</button>
+      <button onclick="clearCart()" style="background:#555;">Clear</button>
+    </div>
+    <p id="status"></p>
+  </div>
+
+  <script>
+    const products = [
+      { name: 'Red Carpet Cosmo', price: 600 },
+      { name: 'Hollywood Royale', price: 800 },
+      { name: 'Whiskey Sour', price: 300 },
+      { name: 'Bottled Water', price: 100 },
+      { name: 'Event Session Fee', price: 15000 }
+    ];
+
+    let cart = [];
+    const productContainer = document.getElementById('products');
+
+    products.forEach((p, index) => {
+      const div = document.createElement('div');
+      div.className = 'product';
+      div.innerHTML = `
+        <span>${p.name} — $${(p.price / 100).toFixed(2)}</span>
+        <button onclick="addToCart(${index})">Add</button>
+      `;
+      productContainer.appendChild(div);
+    });
+
+    function addToCart(i) {
+      cart.push(products[i]);
+      updateTotal();
+    }
+
+    function updateTotal() {
+      const total = cart.reduce((sum, item) => sum + item.price, 0);
+      document.getElementById('total').innerText = 'Total: $' + (total / 100).toFixed(2);
+    }
+
+    async function checkout() {
+      const total = cart.reduce((sum, item) => sum + item.price, 0);
+      if (total === 0) return alert('No items selected!');
+      document.getElementById('status').innerText = 'Processing payment...';
+
+      const res = await fetch('/create-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount: total,
+          description: 'Luxtrium POS Sale'
+        })
+      });
+      const data = await res.json();
+
+      if (data.error) {
+        document.getElementById('status').innerText = '❌ ' + data.error;
+      } else {
+        document.getElementById('status').innerText = '💳 Payment sent to reader!';
+        cart = [];
+        updateTotal();
+      }
+    }
+
+    async function cancelPayment() {
+      await fetch('/cancel-payment', { method: 'POST' });
+      document.getElementById('status').innerText = '❌ Payment canceled.';
+    }
+
+    function clearCart() {
+      cart = [];
+      updateTotal();
+      document.getElementById('status').innerText = '';
+    }
+  </script>
+</body>
+</html>
