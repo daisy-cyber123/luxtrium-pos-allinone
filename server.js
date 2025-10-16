@@ -16,7 +16,9 @@ const cors = require('cors');
 // Initialize app and Stripe
 // --------------------
 const app = express();
-const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2024-06-20',
+});
 
 // --------------------
 // Config
@@ -33,36 +35,42 @@ app.use(bodyParser.json());
 app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
 
 // --------------------
-// Root route
+// Root route (basic landing)
 // --------------------
 app.get('/', (_, res) => {
   res.sendFile(path.join(__dirname, 'public', 'pos.html'));
 });
 
 // --------------------
-// Create a payment intent and process on reader
+// Connection token endpoint (for WisePOS E / Android app)
+// --------------------
+app.post('/connection_token', async (req, res) => {
+  try {
+    const token = await stripe.terminal.connectionTokens.create();
+    res.json({ secret: token.secret });
+  } catch (error) {
+    console.error('❌ Error creating connection token:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --------------------
+// Create payment intent and process on reader
 // --------------------
 app.post('/create-payment', async (req, res) => {
   try {
     const { amount, description } = req.body;
 
-    // Create payment intent
     const paymentIntent = await stripe.paymentIntents.create({
-  amount,
-  currency: 'usd',
-  description,
-  payment_method_types: ['card_present'],
-  capture_method: 'automatic',
-});
+      amount,
+      currency: 'usd',
+      description,
+      payment_method_types: ['card_present'],
+      capture_method: 'automatic',
+    });
 
-
-    // Process payment on reader with tipping and receipt
     const action = await stripe.terminal.readers.processPaymentIntent(READER_ID, {
       payment_intent: paymentIntent.id,
-      tipping: {
-        type: 'fixed_percentage',
-        percentages: [15, 18, 20],
-      },
       receipt: {
         type: 'email_or_sms',
       },
@@ -89,10 +97,11 @@ app.post('/cancel-payment', async (req, res) => {
 });
 
 // --------------------
-// Webhook for payment status logging
+// Webhook for payment status updates
 // --------------------
 app.post('/webhook', async (req, res) => {
   const event = req.body;
+
   switch (event.type) {
     case 'payment_intent.succeeded':
       console.log('✅ Payment succeeded:', event.data.object.id);
@@ -103,10 +112,13 @@ app.post('/webhook', async (req, res) => {
     default:
       console.log(`ℹ️ Event received: ${event.type}`);
   }
+
   res.json({ received: true });
 });
 
 // --------------------
 // Start server
 // --------------------
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
