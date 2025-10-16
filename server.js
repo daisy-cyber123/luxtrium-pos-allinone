@@ -48,13 +48,13 @@ app.post('/create-payment', async (req, res) => {
 
     // Create payment intent
     const paymentIntent = await stripe.paymentIntents.create({
-      amount,
-      currency: 'usd',
-      description,
-      automatic_payment_methods: { enabled: true },
-      payment_method_types: ['card_present'],
-      capture_method: 'automatic',
-    });
+  amount,
+  currency: 'usd',
+  description,
+  payment_method_types: ['card_present'],
+  capture_method: 'automatic',
+});
+
 
     // Process payment on reader with tipping and receipt
     const action = await stripe.terminal.readers.processPaymentIntent(READER_ID, {
