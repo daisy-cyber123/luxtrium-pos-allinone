@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Luxtrium POS – All-in-One</title>
+  <title>Luxtrium POS – All-in-One (Tabs + Email)</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -14,13 +14,15 @@
     }
     h1 { text-align: center; }
     .container {
-      max-width: 500px;
+      max-width: 520px;
       margin: 0 auto;
       background: white;
       padding: 20px;
       border-radius: 12px;
       box-shadow: 0 2px 6px rgba(0,0,0,0.1);
     }
+    .section-title { margin: 0.5rem 0 0.25rem; font-size: 1.05rem; font-weight: bold; }
+    .row { display: flex; gap: 8px; align-items: center; }
     .product {
       display: flex;
       justify-content: space-between;
@@ -33,92 +35,276 @@
       padding: 10px 16px;
       border-radius: 6px;
       cursor: pointer;
-      margin-top: 12px;
+      margin-top: 6px;
     }
-    button:hover { opacity: 0.85; }
+    button.alt { background:#777; }
+    button.ghost { background:#555; }
+    button:hover { opacity: 0.9; }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      margin-top: 6px;
+    }
     #total { font-size: 1.2em; font-weight: bold; margin-top: 10px; }
-    .actions { display: flex; gap: 10px; margin-top: 20px; }
+    .actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+    ul { list-style: none; padding-left: 0; margin: 0.5rem 0 0; }
+    li { margin: 4px 0; }
+    hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
+    #status { min-height: 1.25rem; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>Luxtrium POS</h1>
-    <div id="products"></div>
-    <div id="total">Total: $0.00</div>
+
+    <!-- Tabs (optional) -->
+    <div>
+      <div class="section-title">Tabs (Optional)</div>
+      <div class="row">
+        <select id="tabSelect" onchange="switchTab()">
+          <option value="">— No Tab (One-Off Sale) —</option>
+        </select>
+        <button onclick="newTab()">➕ New Tab</button>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <button class="alt" onclick="closeTab()">💳 Close Tab</button>
+        <button class="ghost" onclick="deleteTab()">🗑️ Delete Tab</button>
+      </div>
+    </div>
+
+    <hr>
+
+    <!-- Products -->
+    <div>
+      <div class="section-title">Bar Menu</div>
+      <div id="products"></div>
+    </div>
+
+    <!-- Current order -->
+    <div style="margin-top:10px;">
+      <div class="section-title">
+        Current Order (<span id="contextLabel">One-Off Sale</span>)
+      </div>
+      <ul id="orderList"></ul>
+      <div id="total">Total: $0.00</div>
+    </div>
+
+    <!-- Optional email -->
+    <div style="margin-top:10px;">
+      <label for="email">Customer Email (optional for receipt):</label>
+      <input type="email" id="email" placeholder="name@example.com" />
+    </div>
+
+    <!-- Actions -->
     <div class="actions">
       <button onclick="checkout()">Charge</button>
-      <button onclick="cancelPayment()" style="background:#777;">Cancel Payment</button>
-      <button onclick="clearCart()" style="background:#555;">Clear</button>
+      <button class="alt" onclick="cancelPayment()">Cancel Payment</button>
+      <button class="ghost" onclick="clearCurrent()">Clear</button>
     </div>
+
     <p id="status"></p>
   </div>
 
   <script>
+    // -------- Config --------
     const products = [
       { name: 'Red Carpet Cosmo', price: 1300 },
       { name: 'Hollywood Royale', price: 1300 },
       { name: 'Whiskey Sour', price: 1300 },
-      { name: 'Brown Derby', price: 1300 },
-      { name: 'Bottled Water', price: 100 },
-      { name: 'Beer', price: 500 },
+      { name: 'Brown Derby',    price: 1300 },
+      { name: 'Bottled Water',  price: 100  },
+      { name: 'Beer',           price: 500  },
     ];
 
-    let cart = [];
-    const productContainer = document.getElementById('products');
+    // -------- State --------
+    let tabs = {};            // { "John": { items:[{name,price}], total: cents } }
+    let currentTab = null;    // null = one-off sale
+    let oneOffItems = [];     // items for one-off context
+    let oneOffTotal = 0;      // cents
+    let currentPaymentIntent = null; // optional if your backend returns it
 
-    products.forEach((p, index) => {
+    // -------- UI Setup --------
+    const productContainer = document.getElementById('products');
+    const orderList = document.getElementById('orderList');
+    const totalEl = document.getElementById('total');
+    const statusEl = document.getElementById('status');
+    const contextLabelEl = document.getElementById('contextLabel');
+
+    // Render product buttons
+    products.forEach((p, i) => {
       const div = document.createElement('div');
       div.className = 'product';
       div.innerHTML = `
         <span>${p.name} — $${(p.price / 100).toFixed(2)}</span>
-        <button onclick="addToCart(${index})">Add</button>
+        <button onclick="addItem(${i})">Add</button>
       `;
       productContainer.appendChild(div);
     });
 
-    function addToCart(i) {
-      cart.push(products[i]);
-      updateTotal();
+    // -------- Tabs --------
+    function newTab() {
+      const name = prompt("Enter tab name (e.g., John or Table 4):");
+      if (!name) return;
+      if (tabs[name]) { alert("That tab already exists."); return; }
+      tabs[name] = { items: [], total: 0 };
+      updateTabSelect();
+      document.getElementById('tabSelect').value = name;
+      switchTab();
     }
 
-    function updateTotal() {
-      const total = cart.reduce((sum, item) => sum + item.price, 0);
-      document.getElementById('total').innerText = 'Total: $' + (total / 100).toFixed(2);
+    function switchTab() {
+      const sel = document.getElementById('tabSelect').value;
+      currentTab = sel || null;
+      renderOrder();
     }
 
-    async function checkout() {
-      const total = cart.reduce((sum, item) => sum + item.price, 0);
-      if (total === 0) return alert('No items selected!');
-      document.getElementById('status').innerText = 'Processing payment...';
+    function deleteTab() {
+      if (!currentTab) { alert("No tab selected."); return; }
+      if (!confirm(`Delete tab "${currentTab}"?`)) return;
+      delete tabs[currentTab];
+      currentTab = null;
+      updateTabSelect();
+      renderOrder();
+    }
 
-      const res = await fetch('/create-payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          amount: total,
-          description: 'Luxtrium POS Sale'
-        })
+    function closeTab() {
+      if (!currentTab) { alert("Select a tab first."); return; }
+      const t = tabs[currentTab];
+      if (!t || t.total <= 0) { alert("Tab is empty."); return; }
+      checkout(true);
+    }
+
+    function updateTabSelect() {
+      const sel = document.getElementById('tabSelect');
+      sel.innerHTML = '<option value="">— No Tab (One-Off Sale) —</option>';
+      Object.keys(tabs).forEach(tab => {
+        const opt = document.createElement('option');
+        opt.value = tab;
+        opt.textContent = tab;
+        sel.appendChild(opt);
       });
-      const data = await res.json();
+    }
 
-      if (data.error) {
-        document.getElementById('status').innerText = '❌ ' + data.error;
+    // -------- Order handling --------
+    function addItem(index) {
+      const item = products[index];
+      if (currentTab) {
+        tabs[currentTab].items.push(item);
+        tabs[currentTab].total += item.price;
       } else {
-        document.getElementById('status').innerText = '💳 Payment sent to reader!';
-        cart = [];
-        updateTotal();
+        oneOffItems.push(item);
+        oneOffTotal += item.price;
+      }
+      renderOrder();
+    }
+
+    function renderOrder() {
+      orderList.innerHTML = "";
+      let items = [];
+      let total = 0;
+
+      if (currentTab && tabs[currentTab]) {
+        contextLabelEl.textContent = currentTab;
+        items = tabs[currentTab].items;
+        total = tabs[currentTab].total;
+      } else {
+        contextLabelEl.textContent = "One-Off Sale";
+        items = oneOffItems;
+        total = oneOffTotal;
+      }
+
+      items.forEach(it => {
+        const li = document.createElement('li');
+        li.textContent = `${it.name} — $${(it.price / 100).toFixed(2)}`;
+        orderList.appendChild(li);
+      });
+      totalEl.textContent = "Total: $" + (total / 100).toFixed(2);
+    }
+
+    function clearCurrent() {
+      if (currentTab && tabs[currentTab]) {
+        tabs[currentTab].items = [];
+        tabs[currentTab].total = 0;
+      } else {
+        oneOffItems = [];
+        oneOffTotal = 0;
+      }
+      document.getElementById('email').value = "";
+      statusEl.textContent = "";
+      renderOrder();
+    }
+
+    // -------- Checkout / Cancel --------
+    async function checkout(fromTab = false) {
+      let total = 0;
+
+      if (currentTab && tabs[currentTab]) {
+        total = tabs[currentTab].total;
+      } else {
+        total = oneOffTotal;
+      }
+
+      if (total <= 0) { alert("No items selected!"); return; }
+
+      // Optional email (only if provided)
+      const emailRaw = document.getElementById('email').value.trim();
+      const receipt_email = emailRaw.length ? emailRaw : undefined;
+
+      statusEl.textContent = "Processing payment…";
+
+      try {
+        const res = await fetch('/create-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amount: total,
+            description: currentTab ? `Tab: ${currentTab}` : 'One-Off Sale',
+            ...(receipt_email ? { receipt_email } : {})
+          })
+        });
+
+        const text = await res.text();
+        if (!res.ok) throw new Error(text);
+        const data = JSON.parse(text);
+
+        if (data.error) throw new Error(data.error);
+
+        // If your backend returns an id, store it so cancel can include it (optional)
+        if (data.payment_intent) {
+          currentPaymentIntent = data.payment_intent;
+        }
+
+        statusEl.textContent = '💳 Payment sent to reader!';
+        // Clear the charged context
+        if (currentTab && tabs[currentTab]) {
+          delete tabs[currentTab];
+          currentTab = null;
+          updateTabSelect();
+        } else {
+          oneOffItems = [];
+          oneOffTotal = 0;
+        }
+        renderOrder();
+      } catch (err) {
+        statusEl.textContent = '❌ ' + err.message;
       }
     }
 
     async function cancelPayment() {
-      await fetch('/cancel-payment', { method: 'POST' });
-      document.getElementById('status').innerText = '❌ Payment canceled.';
-    }
-
-    function clearCart() {
-      cart = [];
-      updateTotal();
-      document.getElementById('status').innerText = '';
+      try {
+        const res = await fetch('/cancel-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // If your backend needs a payment_intent, send it here:
+          body: JSON.stringify(currentPaymentIntent ? { payment_intent: currentPaymentIntent } : {})
+        });
+        await res.text(); // not strictly needed, but good for debugging
+        statusEl.textContent = '❌ Payment canceled.';
+      } catch (err) {
+        statusEl.textContent = 'Cancel error: ' + err.message;
+      }
     }
   </script>
 </body>
