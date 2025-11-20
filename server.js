@@ -1,50 +1,33 @@
 // --------------------
-// Load environment variables
+// Load env + deps
 // --------------------
 require('dotenv').config();
 
-// --------------------
-// Imports
-// --------------------
 const express = require('express');
-const bodyParser = require('body-parser');
-const Stripe = require('stripe');
 const path = require('path');
 const cors = require('cors');
+const Stripe = require('stripe');
 
 // --------------------
-// Initialize
+// Stripe + app setup
 // --------------------
 const app = express();
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 const PORT = process.env.PORT || 4242;
-const READER_ID = process.env.READER_ID;
+const READER_ID = process.env.READER_ID; // WisePOS E ID (tmr_...)
 
-// --------------------
-// Middleware
-// --------------------
 app.use(cors());
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(bodyParser.json());
-app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
 
-// --------------------
-// Routes to serve the POS page
-// --------------------
-
-// Root URL -> show the POS screen
+// Serve your POS UI from /public/pos.html
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'pos.html'));
 });
 
-// Also keep /pos working (both URLs will show the same page)
-app.get('/pos', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'pos.html'));
-});
-
 // --------------------
-// Create + Process Payment (used by your POS)
+// Create PaymentIntent
 // --------------------
 app.post('/create-payment', async (req, res) => {
   try {
@@ -54,8 +37,7 @@ app.post('/create-payment', async (req, res) => {
       return res.status(400).json({ error: 'Missing amount' });
     }
 
-    // Build base PaymentIntent payload
-    const intentData = {
+    const params = {
       amount,
       currency: 'usd',
       payment_method_types: ['card_present'],
@@ -63,48 +45,68 @@ app.post('/create-payment', async (req, res) => {
       description: description || 'Luxtrium POS Sale',
     };
 
-    // Optional email for receipts – ONLY receipt_email is valid,
-    // NOT "receipt" (that caused your earlier error)
+    // Only send receipt_email if you actually collected one
     if (receipt_email) {
-      intentData.receipt_email = receipt_email;
+      params.receipt_email = receipt_email;
     }
 
-    // 1) Create PaymentIntent
-    const paymentIntent = await stripe.paymentIntents.create(intentData);
+    const paymentIntent = await stripe.paymentIntents.create(params);
 
-    // 2) Send to the WisePOS E reader
+    // Frontend will call /process-on-reader with this ID
+    res.json({ payment_intent: paymentIntent.id });
+  } catch (err) {
+    console.error('Error creating payment intent:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --------------------
+// Process on reader
+// --------------------
+app.post('/process-on-reader', async (req, res) => {
+  try {
+    const { payment_intent } = req.body;
+    if (!payment_intent) {
+      return res.status(400).json({ error: 'Missing payment_intent' });
+    }
+
+    // Tell the WisePOS to charge this PaymentIntent
     await stripe.terminal.readers.processPaymentIntent(READER_ID, {
-      payment_intent: paymentIntent.id,
+      payment_intent,
     });
 
-    // 3) Poll until Stripe says it succeeded (or failed)
+    // Poll until Stripe says we're done (success OR failure)
     const poll = async () => {
-      const pi = await stripe.paymentIntents.retrieve(paymentIntent.id);
+      const pi = await stripe.paymentIntents.retrieve(payment_intent);
 
+      // ✅ Success
       if (pi.status === 'succeeded') {
-        return pi;
+        return { ok: true, pi };
       }
 
-      // If it failed or was canceled, stop polling and throw
-      if (
-        pi.status === 'canceled' ||
-        pi.status === 'requires_payment_method'
-      ) {
-        throw new Error(`Payment status: ${pi.status}`);
+      // ❌ Final failure / cancelled
+      if (['requires_payment_method', 'canceled'].includes(pi.status)) {
+        return { ok: false, status: pi.status, pi };
       }
 
-      // Otherwise wait a bit & check again
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Still in progress: wait and check again
+      await new Promise((r) => setTimeout(r, 1500));
       return poll();
     };
 
-    const finalPI = await poll();
+    const result = await poll();
 
-    res.json({
-      success: true,
-      payment_intent: finalPI.id,
-      status: finalPI.status,
-    });
+    if (!result.ok) {
+      // Friendly error message instead of throwing
+      let msg =
+        result.status === 'requires_payment_method'
+          ? 'Payment cancelled on reader or card failed.'
+          : `Payment ${result.status}`;
+      return res.status(400).json({ error: msg });
+    }
+
+    // All good 🎉
+    res.json({ success: true, payment_intent: result.pi.id });
   } catch (err) {
     console.error('Error creating/processing payment:', err);
     res.status(500).json({ error: err.message });
@@ -112,23 +114,33 @@ app.post('/create-payment', async (req, res) => {
 });
 
 // --------------------
-// Cancel current action on reader (Cancel Payment button)
+// Cancel payment
 // --------------------
 app.post('/cancel-payment', async (req, res) => {
   try {
-    await stripe.terminal.readers.cancelAction(READER_ID);
+    const { payment_intent } = req.body || {};
+
+    // Best-effort: cancel any active action on the reader
+    try {
+      await stripe.terminal.readers.cancelAction(READER_ID);
+    } catch (e) {
+      // It's okay if there was nothing to cancel
+    }
+
+    // If we know which PaymentIntent it was, cancel that too (optional)
+    if (payment_intent) {
+      try {
+        await stripe.paymentIntents.cancel(payment_intent);
+      } catch (e) {
+        // Ignore if it's already succeeded/canceled
+      }
+    }
+
     res.json({ success: true });
   } catch (err) {
-    console.error('Error cancelling reader action:', err);
+    console.error('Error cancelling payment:', err);
     res.status(500).json({ error: err.message });
   }
-});
-
-// --------------------
-// Webhook stub (optional)
-// --------------------
-app.post('/webhook', (req, res) => {
-  res.json({ received: true });
 });
 
 // --------------------
