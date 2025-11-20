@@ -1,10 +1,10 @@
 // --------------------
-// Load environment variables
+// Load env vars
 // --------------------
 require('dotenv').config();
 
 // --------------------
-// Import dependencies
+// Imports
 // --------------------
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -13,16 +13,11 @@ const path = require('path');
 const cors = require('cors');
 
 // --------------------
-// Initialize app and Stripe
+// Init
 // --------------------
 const app = express();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2024-06-20',
-});
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-// --------------------
-// Config
-// --------------------
 const PORT = process.env.PORT || 4242;
 const READER_ID = process.env.READER_ID;
 
@@ -35,84 +30,109 @@ app.use(bodyParser.json());
 app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
 
 // --------------------
-// Root route (basic landing)
+// Routes: pages
 // --------------------
-app.get('/', (_, res) => {
+app.get('/', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.get('/pos', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'pos.html'));
 });
 
 // --------------------
-// Connection token endpoint (for WisePOS E / Android app)
-// --------------------
-app.post('/connection_token', async (req, res) => {
-  try {
-    const token = await stripe.terminal.connectionTokens.create();
-    res.json({ secret: token.secret });
-  } catch (error) {
-    console.error('❌ Error creating connection token:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// --------------------
-// Create payment intent and process on reader
+// Create PaymentIntent
+// (used by your bar POS with tabs)
 // --------------------
 app.post('/create-payment', async (req, res) => {
   try {
-    const { amount, description } = req.body;
+    const { amount, description, receipt_email } = req.body;
+
+    if (!amount) {
+      return res.status(400).json({ error: 'Missing amount' });
+    }
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
       currency: 'usd',
-      description,
       payment_method_types: ['card_present'],
       capture_method: 'automatic',
+      description: description || 'Luxtrium POS Sale',
+
+      // ✅ Correct way to add an optional receipt email
+      ...(receipt_email ? { receipt_email } : {})
     });
 
-    const action = await stripe.terminal.readers.processPaymentIntent(READER_ID, {
-      payment_intent: paymentIntent.id,
-      receipt: {
-        type: 'email_or_sms',
-      },
-    });
-
-    res.json({ client_secret: paymentIntent.client_secret, action });
-  } catch (error) {
-    console.error('❌ Error creating payment:', error);
-    res.status(400).json({ error: error.message });
+    res.json({ payment_intent: paymentIntent.id });
+  } catch (err) {
+    console.error('Stripe error creating payment intent:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // --------------------
-// Cancel payment action on reader
+// Process Payment on Reader
+// --------------------
+app.post('/process-on-reader', async (req, res) => {
+  try {
+    const { payment_intent } = req.body;
+    if (!payment_intent) {
+      return res.status(400).json({ error: 'Missing payment_intent' });
+    }
+
+    // ❗ No "receipt" or other extra fields here
+    await stripe.terminal.readers.processPaymentIntent(READER_ID, {
+      payment_intent,
+    });
+
+    // Poll until the PaymentIntent finishes
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    async function poll() {
+      const pi = await stripe.paymentIntents.retrieve(payment_intent);
+
+      if (pi.status === 'succeeded') return pi;
+
+      // You can adjust which statuses you keep waiting on
+      if (
+        pi.status === 'requires_payment_method' ||
+        pi.status === 'requires_confirmation' ||
+        pi.status === 'requires_presentment'
+      ) {
+        await wait(1500);
+        return poll();
+      }
+
+      // Anything else is treated as failure
+      throw new Error(`PaymentIntent ended in status: ${pi.status}`);
+    }
+
+    const finalPI = await poll();
+    res.json({ success: true, payment_intent: finalPI });
+  } catch (err) {
+    console.error('Error processing payment on reader:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --------------------
+// Cancel Payment (clears reader action)
 // --------------------
 app.post('/cancel-payment', async (req, res) => {
   try {
+    // Best effort: cancel the current action on the reader
     await stripe.terminal.readers.cancelAction(READER_ID);
-    res.json({ message: 'Payment canceled successfully.' });
-  } catch (error) {
-    console.error('❌ Error canceling payment:', error);
-    res.status(400).json({ error: error.message });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error canceling payment:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // --------------------
-// Webhook for payment status updates
+// Webhook (optional)
 // --------------------
-app.post('/webhook', async (req, res) => {
-  const event = req.body;
-
-  switch (event.type) {
-    case 'payment_intent.succeeded':
-      console.log('✅ Payment succeeded:', event.data.object.id);
-      break;
-    case 'payment_intent.payment_failed':
-      console.log('❌ Payment failed:', event.data.object.id);
-      break;
-    default:
-      console.log(`ℹ️ Event received: ${event.type}`);
-  }
-
+app.post('/webhook', (req, res) => {
   res.json({ received: true });
 });
 
@@ -120,5 +140,5 @@ app.post('/webhook', async (req, res) => {
 // Start server
 // --------------------
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`✅ Luxtrium POS server running on port ${PORT}`);
 });
